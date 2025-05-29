@@ -1,0 +1,339 @@
+import os
+import requests
+import json
+import asyncio
+import aiohttp
+from datetime import datetime, timedelta
+import pytz
+from openai import OpenAI
+import feedparser
+from typing import List, Dict
+import logging
+from dotenv import load_dotenv
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+load_dotenv
+
+class DailyNewsBot:
+    def __init__(self):
+        # Environment variables from GitHub Secrets
+        self.webhook_url = os.getenv('DISCORD_WEBHOOK_URL')
+        self.openai_client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+        self.news_api_key = os.getenv('NEWS_API_KEY')
+        
+        # Validate required environment variables
+        if not self.webhook_url:
+            raise ValueError("DISCORD_WEBHOOK_URL is required")
+        if not os.getenv('OPENAI_API_KEY'):
+            raise ValueError("OPENAI_API_KEY is required")
+        
+        # Trading-focused news sources
+        self.news_sources = [
+            'reuters', 'bloomberg', 'cnbc', 'marketwatch',
+            'yahoo-finance', 'the-wall-street-journal'
+        ]
+        
+        # Major stock symbols to monitor
+        self.watchlist = [
+            'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'NVDA', 'META',
+            'SPY', 'QQQ', 'IWM', 'DIA'
+        ]
+        
+        self.est = pytz.timezone('US/Eastern')
+        
+    async def fetch_news_articles(self, hours_back: int = 16) -> List[Dict]:
+        """Fetch recent financial news articles"""
+        articles = []
+        from_time = datetime.now() - timedelta(hours=hours_back)
+        
+        try:
+            # Try News API first if available
+            if self.news_api_key:
+                articles.extend(await self._fetch_from_newsapi(from_time))
+            
+            # Always fetch from RSS feeds as primary/backup source
+            articles.extend(await self._fetch_from_rss())
+            
+            # Remove duplicates and sort by relevance
+            unique_articles = self._deduplicate_articles(articles)
+            return sorted(unique_articles, key=lambda x: x.get('relevance_score', 0), reverse=True)[:12]
+            
+        except Exception as e:
+            logger.error(f"Error fetching news: {e}")
+            return []
+    
+    async def _fetch_from_newsapi(self, from_time: datetime) -> List[Dict]:
+        """Fetch from News API"""
+        articles = []
+        
+        url = "https://newsapi.org/v2/everything"
+        params = {
+            'apiKey': self.news_api_key,
+            'sources': ','.join(self.news_sources),
+            'from': from_time.isoformat(),
+            'sortBy': 'relevancy',
+            'language': 'en',
+            'pageSize': 50
+        }
+        
+        async with aiohttp.ClientSession() as session:
+            try:
+                async with session.get(url, params=params) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        for article in data.get('articles', []):
+                            if article.get('title') and article.get('description'):
+                                articles.append({
+                                    'title': article['title'],
+                                    'description': article['description'],
+                                    'url': article['url'],
+                                    'source': article['source']['name'],
+                                    'published_at': article['publishedAt'],
+                                    'relevance_score': self._calculate_relevance(article)
+                                })
+                    else:
+                        logger.warning(f"News API returned status {response.status}")
+            except Exception as e:
+                logger.error(f"Error fetching from News API: {e}")
+        
+        return articles
+    
+    async def _fetch_from_rss(self) -> List[Dict]:
+        """Fetch from RSS feeds"""
+        articles = []
+        rss_feeds = [
+            'https://feeds.bloomberg.com/markets/news.rss',
+            'https://www.cnbc.com/id/100003114/device/rss/rss.html',
+            'https://www.marketwatch.com/rss/topstories',
+            'https://feeds.reuters.com/reuters/businessNews'
+        ]
+        
+        for feed_url in rss_feeds:
+            try:
+                feed = feedparser.parse(feed_url)
+                for entry in feed.entries[:8]:  # Limit per feed
+                    if hasattr(entry, 'title') and hasattr(entry, 'link'):
+                        articles.append({
+                            'title': entry.title,
+                            'description': getattr(entry, 'summary', entry.title)[:200],
+                            'url': entry.link,
+                            'source': feed.feed.get('title', 'RSS Feed'),
+                            'published_at': getattr(entry, 'published', ''),
+                            'relevance_score': self._calculate_relevance({
+                                'title': entry.title, 
+                                'description': getattr(entry, 'summary', '')
+                            })
+                        })
+            except Exception as e:
+                logger.error(f"Error fetching RSS feed {feed_url}: {e}")
+                
+        return articles
+    
+    def _calculate_relevance(self, article: Dict) -> int:
+        """Calculate relevance score based on keywords and symbols"""
+        score = 0
+        text = f"{article.get('title', '')} {article.get('description', '')}".lower()
+        
+        # High-priority market keywords
+        high_keywords = [
+            'earnings', 'guidance', 'merger', 'acquisition', 'ipo', 'fed', 
+            'federal reserve', 'interest rate', 'inflation', 'gdp', 'jobs report'
+        ]
+        
+        # Medium-priority keywords
+        medium_keywords = [
+            'stock', 'trading', 'analyst', 'upgrade', 'downgrade', 'premarket',
+            'afterhours', 'dividend', 'split', 'buyback'
+        ]
+        
+        for keyword in high_keywords:
+            if keyword in text:
+                score += 3
+                
+        for keyword in medium_keywords:
+            if keyword in text:
+                score += 2
+                
+        # Watchlist symbols (high value)
+        for symbol in self.watchlist:
+            if symbol.lower() in text or f"${symbol.lower()}" in text:
+                score += 4
+                
+        return score
+    
+    def _deduplicate_articles(self, articles: List[Dict]) -> List[Dict]:
+        """Remove duplicate articles based on title similarity"""
+        unique_articles = []
+        seen_titles = set()
+        
+        for article in articles:
+            title_words = set(article['title'].lower().split())
+            is_duplicate = False
+            
+            for seen_title in seen_titles:
+                seen_words = set(seen_title.split())
+                # If 70% of words overlap, consider it a duplicate
+                overlap = len(title_words & seen_words) / max(len(title_words), len(seen_words))
+                if overlap > 0.7:
+                    is_duplicate = True
+                    break
+                    
+            if not is_duplicate:
+                unique_articles.append(article)
+                seen_titles.add(article['title'].lower())
+                
+        return unique_articles
+    
+    async def generate_ai_summary(self, articles: List[Dict]) -> str:
+        """Generate AI-powered market summary"""
+        if not articles:
+            return "No significant pre-market news found for today's trading session."
+            
+        # Prepare articles for GPT
+        news_text = "\n\n".join([
+            f"**{article['title']}** ({article['source']})\n{article['description'][:200]}"
+            for article in articles[:10]
+        ])
+        
+        current_time = datetime.now(self.est)
+        
+        prompt = f"""
+        As a professional financial analyst, provide a concise pre-market summary for {current_time.strftime('%A, %B %d, %Y')}. 
+        
+        Based on these overnight and pre-market news articles, analyze:
+        
+        1. **Key Market Catalysts**: What are the main stories that could move markets today?
+        2. **Sector Focus**: Which sectors or individual stocks are in focus?
+        3. **Economic Data**: Any important economic releases or Fed commentary?
+        4. **Risk Factors**: What should traders watch out for today?
+        5. **Trading Opportunities**: Brief mention of potential setups (bullish/bearish)
+        
+        Keep it concise (250-300 words), actionable, and professional. Use bullet points for key highlights.
+        Include relevant stock symbols where appropriate (e.g., $AAPL, $SPY).
+        
+        News Articles:
+        {news_text}
+        """
+        
+        try:
+            response = self.openai_client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": "You are a professional financial analyst providing pre-market briefings for active traders and investors."},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=450,
+                temperature=0.3
+            )
+            
+            return response.choices[0].message.content.strip()
+            
+        except Exception as e:
+            logger.error(f"Error generating AI summary: {e}")
+            return "Unable to generate AI analysis at this time. Please check the news headlines below for market updates."
+    
+    def send_discord_webhook(self, summary: str, articles: List[Dict]):
+        """Send formatted message via Discord webhook"""
+        current_time = datetime.now(self.est)
+        
+        # Create main embed with AI summary
+        main_embed = {
+            "title": "📈 Pre-Market News & Analysis",
+            "description": f"*{current_time.strftime('%A, %B %d, %Y - %I:%M %p EST')}*",
+            "color": 0x00ff00,  # Green
+            "fields": [
+                {
+                    "name": "🤖 AI Market Analysis",
+                    "value": summary[:1000],  # Discord field limit
+                    "inline": False
+                }
+            ],
+            "footer": {
+                "text": "Automated pre-market analysis • For informational purposes only"
+            },
+            "timestamp": current_time.isoformat()
+        }
+        
+        # Create headlines embed
+        if articles:
+            headlines_text = "\n".join([
+                f"• [{article['title'][:65]}...]({article['url']})"
+                for article in articles[:6]
+            ])
+            
+            headlines_embed = {
+                "title": "📰 Key Headlines",
+                "description": headlines_text,
+                "color": 0x0099ff,  # Blue
+            }
+        else:
+            headlines_embed = {
+                "title": "📰 Headlines",
+                "description": "No major headlines found for today's session.",
+                "color": 0x999999,  # Gray
+            }
+        
+        # Market hours reminder
+        market_embed = {
+            "title": "⏰ Trading Schedule",
+            "description": "**Pre-Market:** 4:00 AM - 9:30 AM EST\n**Regular Hours:** 9:30 AM - 4:00 PM EST\n**After-Hours:** 4:00 PM - 8:00 PM EST",
+            "color": 0xffaa00,  # Orange
+        }
+        
+        # Prepare webhook payload
+        payload = {
+            "content": "🌅 **Good morning traders!** Here's your daily pre-market briefing:",
+            "embeds": [main_embed, headlines_embed, market_embed],
+            "username": "Pre-Market News Bot",
+            "avatar_url": "https://cdn-icons-png.flaticon.com/512/3135/3135715.png"
+        }
+        
+        try:
+            response = requests.post(self.webhook_url, json=payload)
+            response.raise_for_status()
+            logger.info("Successfully sent daily news summary to Discord")
+            
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Failed to send Discord webhook: {e}")
+            raise
+
+async def main():
+    """Main function to run the daily news bot"""
+    try:
+        bot = DailyNewsBot()
+        
+        logger.info("Starting daily pre-market news generation...")
+        
+        # Fetch news articles
+        logger.info("Fetching news articles...")
+        articles = await bot.fetch_news_articles(hours_back=16)
+        logger.info(f"Found {len(articles)} relevant articles")
+        
+        # Generate AI summary
+        logger.info("Generating AI summary...")
+        summary = await bot.generate_ai_summary(articles)
+        
+        # Send to Discord
+        logger.info("Sending to Discord...")
+        bot.send_discord_webhook(summary, articles)
+        
+        logger.info("Daily news summary completed successfully!")
+        
+    except Exception as e:
+        logger.error(f"Error in main execution: {e}")
+        # Send error notification to Discord
+        try:
+            error_payload = {
+                "content": f"❌ **Error in daily news bot:** {str(e)[:200]}",
+                "username": "Pre-Market News Bot"
+            }
+            requests.post(os.getenv('DISCORD_WEBHOOK_URL'), json=error_payload)
+        except:
+            pass
+        raise
+
+if __name__ == "__main__":
+    asyncio.run(main())

@@ -1,0 +1,48 @@
+# .github/workflows/daily-news.yml
+name: Daily Pre-Market News Bot
+
+on:
+  schedule:
+    # Runs at 5:30 AM EST (10:30 AM UTC) Monday-Friday
+    # Note: GitHub Actions uses UTC time
+    - cron: '30 10 * * 1-5'
+  
+  # Allow manual trigger for testing
+  workflow_dispatch:
+
+jobs:
+  send-premarket-news:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Cache dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Run pre-market news bot
+      env:
+        DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        NEWS_API_KEY: ${{ secrets.NEWS_API_KEY }}
+      run: |
+    
+    - name: Log completion
+      run: |
+        echo "✅ Pre-market news bot completed at $(date)"

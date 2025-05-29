@@ -1,0 +1,28 @@
+# Core Dependencies
+requests>=2.31.0
+aiohttp>=3.8.0
+asyncio-mqtt>=0.13.0
+
+# AI and News Processing
+openai>=1.0.0
+feedparser>=6.0.10
+
+# Date and Time
+pytz>=2023.3
+
+# Data Processing
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Environment Management
+python-dotenv>=1.0.0
+
+# Testing (Optional)
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+pytest-mock>=3.11.1
+
+# Development Tools (Optional)
+black>=23.0.0
+flake8>=6.0.0
+isort>=5.12.02
