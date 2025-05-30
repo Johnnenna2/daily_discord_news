@@ -2,7 +2,7 @@ name: Daily Pre-Market News Bot
 
 on:
   schedule:
-    - cron: '30 10 * * 1-5'
+    - cron: '0 14 * * 1-5'  # 9:00 AM EST (2:00 PM UTC) Monday-Friday
   workflow_dispatch:
 
 jobs:
@@ -29,6 +29,4 @@ jobs:
         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         NEWS_API_KEY: ${{ secrets.NEWS_API_KEY }}
       run: |
-        echo "Starting pre-market news bot..."
         python daily_news.py
-        echo "Bot completed."
