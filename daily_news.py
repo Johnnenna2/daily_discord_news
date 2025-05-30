@@ -294,23 +294,80 @@ class DailyNewsBot:
             return "Unable to generate AI analysis at this time. Please check the news headlines below for market updates."
     
     def send_discord_webhook(self, summary: str, articles: List[Dict]):
-        """Send formatted message via Discord webhook"""
+        """Send formatted message via Discord webhook with smart text splitting"""
         print("📤 Sending daily briefing to Discord...")
         
         current_time = datetime.now(self.est)
         
-        # Create main embed with AI summary
+        # Smart splitting of AI summary to handle Discord's 1024 character field limit
+        def split_summary(text: str, max_length: int = 1000) -> List[str]:
+            """Split summary at natural breakpoints while respecting character limits"""
+            if len(text) <= max_length:
+                return [text]
+            
+            parts = []
+            
+            # Split by double newlines (paragraphs) first
+            paragraphs = text.split('\n\n')
+            current_part = ""
+            
+            for paragraph in paragraphs:
+                # If adding this paragraph would exceed limit
+                if len(current_part + paragraph + '\n\n') > max_length:
+                    # If we have content, save it
+                    if current_part.strip():
+                        parts.append(current_part.strip())
+                        current_part = ""
+                    
+                    # If single paragraph is too long, split by sentences
+                    if len(paragraph) > max_length:
+                        sentences = paragraph.split('. ')
+                        temp_part = ""
+                        
+                        for sentence in sentences:
+                            if len(temp_part + sentence + '. ') <= max_length:
+                                temp_part += sentence + '. '
+                            else:
+                                if temp_part.strip():
+                                    parts.append(temp_part.strip())
+                                temp_part = sentence + '. '
+                        
+                        if temp_part.strip():
+                            current_part = temp_part
+                    else:
+                        current_part = paragraph + '\n\n'
+                else:
+                    current_part += paragraph + '\n\n'
+            
+            # Add any remaining content
+            if current_part.strip():
+                parts.append(current_part.strip())
+            
+            return parts
+        
+        # Split the summary into manageable parts
+        summary_parts = split_summary(summary)
+        
+        # Create fields for each part of the analysis
+        analysis_fields = []
+        for i, part in enumerate(summary_parts):
+            if i == 0:
+                field_name = "🤖 AI Market Analysis"
+            else:
+                field_name = f"🤖 Analysis (Part {i+1})"
+            
+            analysis_fields.append({
+                "name": field_name,
+                "value": part,
+                "inline": False
+            })
+        
+        # Create main embed with split analysis
         main_embed = {
             "title": "📈 Pre-Market News & Analysis",
             "description": f"*{current_time.strftime('%A, %B %d, %Y - %I:%M %p EST')}*",
             "color": 0x00ff00,  # Green
-            "fields": [
-                {
-                    "name": "🤖 AI Market Analysis",
-                    "value": summary[:1000],  # Discord field limit
-                    "inline": False
-                }
-            ],
+            "fields": analysis_fields,
             "footer": {
                 "text": "Automated pre-market analysis • For informational purposes only"
             },
@@ -352,6 +409,12 @@ class DailyNewsBot:
         }
         
         try:
+            # Debug: Print payload size info
+            payload_size = len(json.dumps(payload))
+            analysis_size = sum(len(field['value']) for field in analysis_fields)
+            print(f"📊 Analysis split into {len(summary_parts)} parts ({analysis_size} total chars)")
+            print(f"📦 Total payload size: {payload_size} characters")
+            
             response = requests.post(self.webhook_url, json=payload, timeout=30)
             response.raise_for_status()
             print("✅ Daily briefing sent successfully to Discord!")
@@ -359,6 +422,9 @@ class DailyNewsBot:
         except requests.exceptions.RequestException as e:
             print(f"❌ Failed to send Discord webhook: {e}")
             logger.error(f"Failed to send Discord webhook: {e}")
+            if hasattr(e, 'response') and e.response:
+                print(f"   Response status: {e.response.status_code}")
+                print(f"   Response text: {e.response.text}")
             raise
 
 async def main():
