@@ -2,7 +2,7 @@ name: Daily Pre-Market News Bot
 
 on:
   schedule:
-    - cron: '0 14 * * 1-5'  # 9:00 AM EST (2:00 PM UTC) Monday-Friday
+    - cron: '0 17 * * 1-5'  # 9:00 AM PST (5:00 PM UTC) Monday-Friday
   workflow_dispatch:
 
 jobs:
