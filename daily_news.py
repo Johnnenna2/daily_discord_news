@@ -351,10 +351,8 @@ class DailyNewsBot:
         # Create fields for each part of the analysis
         analysis_fields = []
         for i, part in enumerate(summary_parts):
-            if i == 0:
-                field_name = "🤖 AI Market Analysis"
-            else:
-                field_name = f"🤖 Analysis (Part {i+1})"
+            # Only label the first section, leave others unlabeled for seamless flow
+            field_name = "🤖 AI Market Analysis" if i == 0 else "\u200b"  # Zero-width space for continuation
             
             analysis_fields.append({
                 "name": field_name,
