@@ -1,3 +1,4 @@
+
 import os
 import requests
 import json
@@ -9,26 +10,46 @@ from openai import OpenAI
 import feedparser
 from typing import List, Dict
 import logging
-from dotenv import load_dotenv
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-
-load_dotenv
 
 class DailyNewsBot:
     def __init__(self):
-        # Environment variables from GitHub Secrets
-        self.webhook_url = os.getenv('DISCORD_WEBHOOK_URL')
-        self.openai_client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
-        self.news_api_key = os.getenv('NEWS_API_KEY')
+        print("\n🔧 INITIALIZING BOT - DEBUG MODE")
+        print("=" * 50)
         
-        # Validate required environment variables
-        if not self.webhook_url:
-            raise ValueError("DISCORD_WEBHOOK_URL is required")
-        if not os.getenv('OPENAI_API_KEY'):
-            raise ValueError("OPENAI_API_KEY is required")
+        # Debug environment variables
+        print("📋 Environment Variables Check:")
+        openai_key = os.getenv('OPENAI_API_KEY')
+        webhook_url = os.getenv('DISCORD_WEBHOOK_URL')
+        news_key = os.getenv('NEWS_API_KEY')
+        
+        print(f"  OPENAI_API_KEY: {'✅ SET (' + openai_key[:20] + '...)' if openai_key else '❌ MISSING'}")
+        print(f"  DISCORD_WEBHOOK_URL: {'✅ SET (' + webhook_url[:50] + '...)' if webhook_url else '❌ MISSING'}")
+        print(f"  NEWS_API_KEY: {'✅ SET' if news_key else '❌ MISSING (optional)'}")
+        
+        # Load dotenv for local development
+        try:
+            from dotenv import load_dotenv
+            if os.path.exists('.env'):
+                load_dotenv()
+                print("📁 Loaded .env file for local development")
+            else:
+                print("🔧 Using system environment variables (GitHub Actions)")
+        except ImportError:
+            print("🔧 python-dotenv not available, using system environment variables")
+        
+        # Initialize APIs
+        if not openai_key:
+            raise ValueError("❌ OPENAI_API_KEY environment variable is required")
+        if not webhook_url:
+            raise ValueError("❌ DISCORD_WEBHOOK_URL environment variable is required")
+            
+        self.openai_client = OpenAI(api_key=openai_key)
+        self.webhook_url = webhook_url
+        self.news_api_key = news_key
         
         # Trading-focused news sources
         self.news_sources = [
@@ -43,25 +64,100 @@ class DailyNewsBot:
         ]
         
         self.est = pytz.timezone('US/Eastern')
+        print("✅ Bot initialized successfully!")
+        print("=" * 50)
         
+    def test_webhook(self):
+        """Test Discord webhook connectivity"""
+        print("\n🧪 TESTING DISCORD WEBHOOK")
+        print("-" * 30)
+        
+        if not self.webhook_url:
+            print("❌ No webhook URL available")
+            return False
+            
+        payload = {
+            "content": f"🧪 **Debug Test from GitHub Actions**\n⏰ Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            "username": "Debug Bot"
+        }
+        
+        try:
+            print(f"📤 Sending test message to webhook...")
+            print(f"   Webhook URL: {self.webhook_url[:50]}...")
+            
+            response = requests.post(self.webhook_url, json=payload, timeout=10)
+            response.raise_for_status()
+            
+            print("✅ Test webhook sent successfully!")
+            print(f"   Response status: {response.status_code}")
+            return True
+            
+        except requests.exceptions.RequestException as e:
+            print(f"❌ Webhook test failed: {e}")
+            print(f"   Response status: {getattr(e.response, 'status_code', 'No response')}")
+            if hasattr(e, 'response') and e.response:
+                print(f"   Response text: {e.response.text}")
+            return False
+    
+    def test_openai(self):
+        """Test OpenAI API connectivity"""
+        print("\n🧪 TESTING OPENAI API")
+        print("-" * 30)
+        
+        try:
+            print("📤 Sending test request to OpenAI...")
+            
+            response = self.openai_client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "user", "content": "Say 'OpenAI test successful' in exactly those words."}
+                ],
+                max_tokens=10
+            )
+            
+            result = response.choices[0].message.content.strip()
+            print("✅ OpenAI test successful!")
+            print(f"   Response: {result}")
+            return True
+            
+        except Exception as e:
+            print(f"❌ OpenAI test failed: {e}")
+            return False
+
     async def fetch_news_articles(self, hours_back: int = 16) -> List[Dict]:
         """Fetch recent financial news articles"""
+        print(f"\n📰 FETCHING NEWS ARTICLES (last {hours_back} hours)")
+        print("-" * 30)
+        
         articles = []
         from_time = datetime.now() - timedelta(hours=hours_back)
         
         try:
             # Try News API first if available
             if self.news_api_key:
+                print("📡 Fetching from News API...")
                 articles.extend(await self._fetch_from_newsapi(from_time))
+            else:
+                print("⚠️  No News API key, skipping News API")
             
             # Always fetch from RSS feeds as primary/backup source
-            articles.extend(await self._fetch_from_rss())
+            print("📡 Fetching from RSS feeds...")
+            rss_articles = await self._fetch_from_rss()
+            articles.extend(rss_articles)
+            
+            print(f"📊 Total articles fetched: {len(articles)}")
             
             # Remove duplicates and sort by relevance
             unique_articles = self._deduplicate_articles(articles)
-            return sorted(unique_articles, key=lambda x: x.get('relevance_score', 0), reverse=True)[:12]
+            print(f"📊 Unique articles after deduplication: {len(unique_articles)}")
+            
+            sorted_articles = sorted(unique_articles, key=lambda x: x.get('relevance_score', 0), reverse=True)[:12]
+            print(f"📊 Top articles selected: {len(sorted_articles)}")
+            
+            return sorted_articles
             
         except Exception as e:
+            print(f"❌ Error fetching news: {e}")
             logger.error(f"Error fetching news: {e}")
             return []
     
@@ -84,7 +180,10 @@ class DailyNewsBot:
                 async with session.get(url, params=params) as response:
                     if response.status == 200:
                         data = await response.json()
-                        for article in data.get('articles', []):
+                        news_articles = data.get('articles', [])
+                        print(f"   📈 News API returned {len(news_articles)} articles")
+                        
+                        for article in news_articles:
                             if article.get('title') and article.get('description'):
                                 articles.append({
                                     'title': article['title'],
@@ -95,9 +194,10 @@ class DailyNewsBot:
                                     'relevance_score': self._calculate_relevance(article)
                                 })
                     else:
-                        logger.warning(f"News API returned status {response.status}")
+                        print(f"   ⚠️  News API returned status {response.status}")
+                        
             except Exception as e:
-                logger.error(f"Error fetching from News API: {e}")
+                print(f"   ❌ Error fetching from News API: {e}")
         
         return articles
     
@@ -113,7 +213,10 @@ class DailyNewsBot:
         
         for feed_url in rss_feeds:
             try:
+                print(f"   📡 Fetching from {feed_url.split('//')[1].split('/')[0]}...")
                 feed = feedparser.parse(feed_url)
+                feed_articles = 0
+                
                 for entry in feed.entries[:8]:  # Limit per feed
                     if hasattr(entry, 'title') and hasattr(entry, 'link'):
                         articles.append({
@@ -127,8 +230,12 @@ class DailyNewsBot:
                                 'description': getattr(entry, 'summary', '')
                             })
                         })
+                        feed_articles += 1
+                        
+                print(f"      ✅ Got {feed_articles} articles")
+                        
             except Exception as e:
-                logger.error(f"Error fetching RSS feed {feed_url}: {e}")
+                print(f"      ❌ Error fetching RSS feed: {e}")
                 
         return articles
     
@@ -189,8 +296,13 @@ class DailyNewsBot:
     
     async def generate_ai_summary(self, articles: List[Dict]) -> str:
         """Generate AI-powered market summary"""
+        print(f"\n🤖 GENERATING AI SUMMARY")
+        print("-" * 30)
+        
         if not articles:
-            return "No significant pre-market news found for today's trading session."
+            summary = "No significant pre-market news found for today's trading session."
+            print("⚠️  No articles to summarize")
+            return summary
             
         # Prepare articles for GPT
         news_text = "\n\n".join([
@@ -219,8 +331,10 @@ class DailyNewsBot:
         """
         
         try:
+            print("📤 Sending request to OpenAI...")
+            
             response = self.openai_client.chat.completions.create(
-                model="gpt-3.5-turbo",
+                model="gpt-3.5-turbo",  # Changed from gpt-4 to avoid quota issues
                 messages=[
                     {"role": "system", "content": "You are a professional financial analyst providing pre-market briefings for active traders and investors."},
                     {"role": "user", "content": prompt}
@@ -229,14 +343,21 @@ class DailyNewsBot:
                 temperature=0.3
             )
             
-            return response.choices[0].message.content.strip()
+            summary = response.choices[0].message.content.strip()
+            print("✅ AI summary generated successfully!")
+            print(f"   Summary length: {len(summary)} characters")
+            return summary
             
         except Exception as e:
+            print(f"❌ Error generating AI summary: {e}")
             logger.error(f"Error generating AI summary: {e}")
             return "Unable to generate AI analysis at this time. Please check the news headlines below for market updates."
     
     def send_discord_webhook(self, summary: str, articles: List[Dict]):
         """Send formatted message via Discord webhook"""
+        print(f"\n📤 SENDING TO DISCORD")
+        print("-" * 30)
+        
         current_time = datetime.now(self.est)
         
         # Create main embed with AI summary
@@ -292,22 +413,56 @@ class DailyNewsBot:
         }
         
         try:
-            response = requests.post(self.webhook_url, json=payload)
+            print("📤 Sending Discord webhook...")
+            print(f"   Payload size: {len(json.dumps(payload))} characters")
+            
+            response = requests.post(self.webhook_url, json=payload, timeout=30)
             response.raise_for_status()
-            logger.info("Successfully sent daily news summary to Discord")
+            
+            print("✅ Successfully sent daily news summary to Discord")
+            print(f"   Response status: {response.status_code}")
             
         except requests.exceptions.RequestException as e:
+            print(f"❌ Failed to send Discord webhook: {e}")
             logger.error(f"Failed to send Discord webhook: {e}")
+            if hasattr(e, 'response') and e.response:
+                print(f"   Response status: {e.response.status_code}")
+                print(f"   Response text: {e.response.text}")
             raise
 
 async def main():
     """Main function to run the daily news bot"""
+    print("🚀 STARTING DAILY PRE-MARKET NEWS BOT")
+    print("=" * 60)
+    print(f"⏰ Current time: {datetime.now()}")
+    print(f"🌍 Current UTC time: {datetime.utcnow()}")
+    print(f"🇺🇸 Current EST time: {datetime.now(pytz.timezone('US/Eastern'))}")
+    print("=" * 60)
+    
     try:
+        # Initialize bot
         bot = DailyNewsBot()
         
-        logger.info("Starting daily pre-market news generation...")
+        # Run connectivity tests
+        print("\n🧪 RUNNING CONNECTIVITY TESTS")
+        print("=" * 40)
         
+        webhook_test = bot.test_webhook()
+        openai_test = bot.test_openai()
+        
+        if not webhook_test:
+            print("❌ Webhook test failed - check your Discord webhook URL")
+            
+        if not openai_test:
+            print("❌ OpenAI test failed - check your API key and billing")
+        
+        if not webhook_test or not openai_test:
+            print("\n⚠️  Some tests failed, but continuing with news generation...")
+            
         # Fetch news articles
+        print(f"\n📰 NEWS GENERATION PROCESS")
+        print("=" * 40)
+        
         logger.info("Fetching news articles...")
         articles = await bot.fetch_news_articles(hours_back=16)
         logger.info(f"Found {len(articles)} relevant articles")
@@ -320,17 +475,25 @@ async def main():
         logger.info("Sending to Discord...")
         bot.send_discord_webhook(summary, articles)
         
+        print("\n🎉 SUCCESS!")
+        print("=" * 20)
         logger.info("Daily news summary completed successfully!")
         
     except Exception as e:
+        print(f"\n💥 CRITICAL ERROR")
+        print("=" * 20)
+        print(f"❌ Error: {str(e)}")
         logger.error(f"Error in main execution: {e}")
-        # Send error notification to Discord
+        
+        # Try to send error notification to Discord
         try:
-            error_payload = {
-                "content": f"❌ **Error in daily news bot:** {str(e)[:200]}",
-                "username": "Pre-Market News Bot"
-            }
-            requests.post(os.getenv('DISCORD_WEBHOOK_URL'), json=error_payload)
+            webhook_url = os.getenv('DISCORD_WEBHOOK_URL')
+            if webhook_url:
+                error_payload = {
+                    "content": f"❌ **Error in daily news bot:** {str(e)[:200]}",
+                    "username": "Pre-Market News Bot - ERROR"
+                }
+                requests.post(webhook_url, json=error_payload)
         except:
             pass
         raise
